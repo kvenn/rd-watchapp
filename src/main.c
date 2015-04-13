@@ -23,6 +23,8 @@ static TextLayer *s_output_layer;
 
 static WakeupId s_wakeup_id;
 
+DataLoggingSessionRef data_log;
+
 enum {
   // This key specifies which type of message it is (of type enum below)
   MESSAGE_TYPE_KEY = 0x0,
@@ -61,6 +63,12 @@ static void vibrate_watch() {
     .num_segments = ARRAY_LENGTH(segments),
   };
   vibes_enqueue_custom_pattern(pat);
+  
+  // Create data log session to send to phone
+  data_log = data_logging_create(42, DATA_LOGGING_UINT, 4, false);
+  time_t now = time(NULL);
+  // Output log data to phone
+  DataLoggingResult dlresult = data_logging_log(data_log, (uint8_t *)&now, 1);
 }
 
 static void print_time_t(time_t time) {
@@ -211,8 +219,12 @@ static void in_dropped_handler(AppMessageResult reason, void *context) {
  ******* Init Methods
  ******************************************/
 
-// TODO: This will be a simulation of if the phone sends a push
+// TODO: This will be a simulation of the vibrate
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  vibrate_watch();
+}
+// TODO: This will be a simulation of if the phone sends a push
+static void down_single_click_handler(ClickRecognizerRef recognizer, void *context) {
   // Write the message passed from the phone into the "persisted current message"
   persist_write_string(PERSIST_KEY_MESSAGE, "Take a deep breadth");
   schedule_next_wake();
@@ -220,6 +232,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
 static void click_config_provider(void *context) {
   // Register the ClickHandlers
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, down_single_click_handler);
 }
 
 static void main_window_load(Window *window) {
@@ -275,6 +288,7 @@ static void init(void) {
 static void deinit(void) {
   // Destroy main Window
   window_destroy(s_main_window);
+  data_logging_finish(data_log);
 }
 
 int main(void) {
