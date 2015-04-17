@@ -7,7 +7,7 @@
 #include <stdlib.h> /* srand(), rand() */
 #include "PDUtils.h" /* p_mktime */
 
-#define START_HOUR 9 // 9am (09:00)
+#define START_HOUR 10 // 10am (10:00)
 #define END_HOUR 20 // 8pm (20:00)
   
 #define MESSAGE_DURATION 20 // Number of seconds to show the message for
@@ -51,8 +51,8 @@ static int get_random_time_increment() {
   // 60 minutes * 60 seconds = 1 hour;
   int hour_30 = min_to_sec(60) + min_to_sec(30); // 3600 + 1800 = 5400
   int minute_increment = min_to_sec(rand() % 30); // 0 -> 1800
-  return hour_30 + minute_increment; // 5400 -> 7200
-//   return min_to_sec(1); // For testing
+  return hour_30 + minute_increment; // 5400 -> 7200 (about 6-7 times a day)
+//   return min_to_sec(5) + minute_increment; // For testing TODO
 }
 
 static void vibrate_watch() {
@@ -102,16 +102,25 @@ static void cancel_all_wakes() {
 // Otherwise schedule the next wakeup/vibrate for get_random_time_increment() in the future
 static void schedule_next_wake()
 {
+  unsigned int uint_wakup_id = s_wakeup_id;
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Scheduling next wake with wakeup_id: %u", uint_wakup_id);
   // Check the event is not already scheduled
   if (!wakeup_query(s_wakeup_id, NULL)) {
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "No wake existed, so setting a new one and cancelling all others");
+    
+    // We're about to schedule a new wakeup, so cancel all the old ones
+    // This will prevent us from creating multiples (and exceeding the limit of 8)
+    wakeup_cancel_all();
+    
     time_t now_time = time(NULL); // Now
     struct tm *now_localtime = localtime(&now_time);
     
     // Next time to wake and vibrate the watch
     time_t future_time;
     
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Now hour: %d and end hour: %d", now_localtime->tm_hour, END_HOUR);
     // If now is past END_TIME, schedule the next wake for START_HOUR 
-    if(now_localtime->tm_hour > END_HOUR) {
+    if(now_localtime->tm_hour >= END_HOUR) {
       struct tm tomorrow_morning;
 
       tomorrow_morning.tm_sec = 0;
@@ -137,7 +146,20 @@ static void schedule_next_wake()
     
     // Schedule wakeup event and keep the WakeupId
     s_wakeup_id = wakeup_schedule(future_time, WAKEUP_REASON_REMINDER, true);
-    persist_write_int(PERSIST_KEY_WAKEUP_ID, s_wakeup_id);
+    if(s_wakeup_id < 0) {
+      unsigned int uint_wakup_id = s_wakeup_id;
+      APP_LOG(APP_LOG_LEVEL_DEBUG, "Error in scheduling wakeup with error code: %u", uint_wakup_id);
+      // If scheduling didn't work, try again (it will return negative value for failure)
+      // only if its -8 (another wakeup schedule at that time) or -3 (internal error)
+      if(s_wakeup_id == -8 || s_wakeup_id == -3) {
+        APP_LOG(APP_LOG_LEVEL_DEBUG, "Trying again...");
+        schedule_next_wake();
+      }
+    } else {
+      unsigned int uint_wakup_id = s_wakeup_id;
+      APP_LOG(APP_LOG_LEVEL_DEBUG, "Storing new s_wakeup_id: %u", uint_wakup_id);
+      persist_write_int(PERSIST_KEY_WAKEUP_ID, s_wakeup_id);
+    }
   } else {
     // If schedule was called and wake already exists, delete the old one and start a new one
     cancel_all_wakes();
@@ -196,10 +218,18 @@ static void in_received_handler(DictionaryIterator *iter, void *context) {
   Tuple *msg_tuple = dict_find(iter, MESSAGE_KEY);
   static char s_msg[MESSAGE_LENGTH];
 
-  // The only time the persistent message is empty is the first time the watch
-  // sends a message - which means you must schedule the first wake
-  // which will in turn set the rest
-  if (!persist_exists(PERSIST_KEY_MESSAGE)) {
+//   // The only time the persistent message is empty is the first time the watch
+//   // sends a message - which means you must schedule the first wake
+//   // which will in turn set the rest
+//   if (!persist_exists(PERSIST_KEY_MESSAGE)) {
+//     schedule_next_wake();
+//   }
+  
+  // If there is no wake scheduled, schedule one
+  s_wakeup_id = persist_exists(PERSIST_KEY_WAKEUP_ID) ? persist_read_int(PERSIST_KEY_WAKEUP_ID) : -1;
+  unsigned int uint_wakup_id = s_wakeup_id;
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Checking if wakeup already scheduled with wakeupid: %u", uint_wakup_id);
+  if(!wakeup_query(s_wakeup_id, NULL)) {
     schedule_next_wake();
   }
   
@@ -227,7 +257,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
 static void down_single_click_handler(ClickRecognizerRef recognizer, void *context) {
   // Write the message passed from the phone into the "persisted current message"
   persist_write_string(PERSIST_KEY_MESSAGE, "Take a deep breadth");
-  schedule_next_wake();
+//   schedule_next_wake();
 }
 static void click_config_provider(void *context) {
   // Register the ClickHandlers
@@ -278,10 +308,14 @@ static void init(void) {
     // The app was started by a wakeup
     WakeupId id = 0;
     int32_t reason = 0;
-
-    // Get details and handle the wakeup
-    wakeup_get_launch_event(&id, &reason);
-    wakeup_handler(id, reason);
+    
+    if (reason == WAKEUP_REASON_REMINDER) {
+      // Get details and handle the wakeup
+      wakeup_get_launch_event(&id, &reason);
+      // Re-initialize s_wakeup_id
+      s_wakeup_id = id;
+      wakeup_handler(id, reason);
+    }
   }
 }
 
